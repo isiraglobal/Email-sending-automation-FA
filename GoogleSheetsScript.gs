@@ -1,6 +1,12 @@
 /**
  * ============================================================================
- * FOREIGN AFFAIRS LLC — COMPLETE EMAIL AUTOMATION v7.4
+ * FOREIGN AFFAIRS LLC — COMPLETE EMAIL AUTOMATION v7.5
+ *
+ * FIXES IN v7.5:
+ *   - Added sendDailySummary() — concise 7-line Discord summary at 7 PM EST
+ *   - Removed phone requirement for email sending (email-only check)
+ *   - Full-sheet scan picks earliest valid row across cursor→end→wrap→top
+ *   - Always auto-detects last "sent" row, starts from after it
  *
  * FIXES IN v7.4:
  *   - Added setupTriggers() / removeAllTriggers() / listTriggers() / resetSendCursor()
@@ -153,7 +159,7 @@ const BODY_CLOSINGS = [
 
 function run() {
   Logger.log("=================================================");
-  Logger.log("FOREIGN AFFAIRS AUTOMATION v7.3 — DIAGNOSTIC");
+  Logger.log("FOREIGN AFFAIRS AUTOMATION v7.5 — DIAGNOSTIC");
   Logger.log("=================================================");
   Logger.log("TEST_MODE = " + TEST_MODE);
   Logger.log("Time: " + _nowStr());
@@ -491,7 +497,7 @@ function run() {
         triggerFuncs[fn] = true;
         Logger.log("  • " + fn + " — " + t.getEventType());
       });
-      var expected = ["sendNextEmail", "syncOpensFromCloudflare", "checkAndNotifyReplies", "generateDailyReport"];
+      var expected = ["sendNextEmail", "syncOpensFromCloudflare", "checkAndNotifyReplies", "generateDailyReport", "sendDailySummary"];
       var missing = expected.filter(function(f) { return !triggerFuncs[f]; });
       if (missing.length > 0) {
         Logger.log("  Missing triggers: " + missing.join(", "));
@@ -633,6 +639,13 @@ function setupTriggers() {
       hour: 23,
       minute: 0,
       desc: "Daily report — 11 PM every day"
+    },
+    {
+      func: "sendDailySummary",
+      freq: ScriptApp.WeekDay.MONDAY,
+      hour: 19,
+      minute: 0,
+      desc: "Daily Discord summary — 7 PM EST"
     }
   ];
 
@@ -669,6 +682,13 @@ function setupTriggers() {
           .atHour(cfg.hour)
           .nearMinute(cfg.minute)
           .everyDays(1);
+      } else if (cfg.func === "sendDailySummary") {
+        builder = ScriptApp.newTrigger(cfg.func)
+          .timeBased()
+          .atHour(19)
+          .nearMinute(0)
+          .everyDays(1)
+          .inTimezone("America/New_York");
       }
 
       builder.create();
@@ -1720,6 +1740,110 @@ function generateDailyReport() {
     }
   } catch (e) {
     Logger.log("FATAL ERROR in generateDailyReport: " + e.message);
+  }
+}
+
+
+// ============================================================================
+// MAIN: DAILY SUMMARY — DISCORD (7 PM EST)
+// ============================================================================
+
+function sendDailySummary() {
+  try {
+    var ss = _getActiveSS();
+    var sheetName = TEST_MODE ? INGEST_CFG.TEST_SHEET_NAME : INGEST_CFG.OUT_SORTED;
+    var sortedSheet = ss.getSheetByName(sheetName);
+    if (!sortedSheet) {
+      Logger.log("ERROR: '" + sheetName + "' sheet not found");
+      return;
+    }
+
+    var lastRow = sortedSheet.getLastRow();
+    if (lastRow < 2) {
+      Logger.log("No data for summary");
+      return;
+    }
+
+    var colMap = _readHeaderColMap(sortedSheet);
+    var cStatus = colMap.status;
+    var cSentTS = colMap.sent_timestamp;
+    var cOpenCount = colMap.open_count;
+
+    if (cStatus === -1) {
+      Logger.log("FATAL: 'status' column not found");
+      return;
+    }
+
+    var lastCol = sortedSheet.getLastColumn();
+    var data = sortedSheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+
+    var props = PropertiesService.getScriptProperties();
+    var lastSentRow = props.getProperty("LAST_SENT_ROW") || "1";
+    var tickCount = props.getProperty("FA_TICK_COUNT") || "0";
+
+    var nowEst = new Date();
+    var dateStr = Utilities.formatDate(nowEst, "America/New_York", "MMM dd, yyyy");
+    var todayStr = Utilities.formatDate(nowEst, "America/New_York", "yyyy-MM-dd");
+
+    var total = data.length;
+    var sentToday = 0;
+    var totalSent = 0;
+    var opens = 0;
+    var replies = 0;
+    var failed = 0;
+
+    for (var i = 0; i < data.length; i++) {
+      var status = String(_cellSafe(data[i], cStatus, "")).trim().toLowerCase();
+      var sentTime = cSentTS >= 0 ? String(_cellSafe(data[i], cSentTS, "")).trim() : "";
+      var rawOpen = cOpenCount >= 0 ? data[i][cOpenCount] : 0;
+      var openCount = (typeof rawOpen === "number" && !isNaN(rawOpen)) ? rawOpen : 0;
+
+      if (sentTime.indexOf(todayStr) >= 0) sentToday++;
+      if (status === "sent") totalSent++;
+      if (openCount > 0) opens++;
+      if (status === "replied") replies++;
+      if (status === "failed") failed++;
+    }
+
+    var openRate = totalSent > 0 ? ((opens / totalSent) * 100).toFixed(1) : "0.0";
+    var replyRate = totalSent > 0 ? ((replies / totalSent) * 100).toFixed(1) : "0.0";
+
+    var summary = "📬 Daily Summary — " + dateStr + "\n"
+      + "━━━━━━━━━━━━━━━━━━━━━━\n"
+      + "• Sent Today: " + sentToday + "\n"
+      + "• Total Sent: " + totalSent + " / " + total + "\n"
+      + "• Opens: " + opens + " (" + openRate + "%)\n"
+      + "• Replies: " + replies + " (" + replyRate + "%)\n"
+      + "• Failed: " + failed + "\n"
+      + "━━━━━━━━━━━━━━━━━━━━━━\n"
+      + "Next row: " + lastSentRow + " | Total runs: " + tickCount;
+
+    var discordPayload = {
+      embeds: [{
+        title: "Foreign Affairs — Daily Summary",
+        color: 0x2C3E50,
+        description: summary,
+        footer: {
+          text: "America/New_York • " + _nowStr()
+        }
+      }]
+    };
+
+    try {
+      UrlFetchApp.fetch(DISCORD_WEBHOOK_URL, {
+        method: "POST",
+        contentType: "application/json",
+        payload: JSON.stringify(discordPayload),
+        muteHttpExceptions: true
+      });
+      Logger.log("Daily summary sent to Discord for " + dateStr);
+    } catch (e) {
+      Logger.log("Discord webhook error: " + e.message);
+    }
+
+    Logger.log("Summary: " + total + " leads, " + totalSent + " sent, " + sentToday + " today, " + opens + " opens, " + replies + " replies");
+  } catch (e) {
+    Logger.log("FATAL ERROR in sendDailySummary: " + e.message);
   }
 }
 
