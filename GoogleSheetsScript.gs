@@ -1590,6 +1590,33 @@ function checkAndNotifyReplies() {
 
     var replied = sentCount - Object.keys(sentLeads).length;
     Logger.log("Reply check complete: " + replied + " new replies notified to Discord");
+
+    if (replied === 0) {
+      var props = PropertiesService.getScriptProperties();
+      var lastHeartbeat = props.getProperty("LAST_REPLY_HEARTBEAT") || "0";
+      var nowMs = new Date().getTime();
+      var elapsed = nowMs - parseInt(lastHeartbeat);
+      if (!lastHeartbeat || lastHeartbeat === "0" || elapsed > 24 * 60 * 60 * 1000) {
+        try {
+          UrlFetchApp.fetch(DISCORD_WEBHOOK_URL + "?thread_id=" + DISCORD_THREAD_REPLIES, {
+            method: "POST",
+            contentType: "application/json",
+            payload: JSON.stringify({
+              embeds: [{
+                title: "No new replies yet",
+                color: 0x95A5A6,
+                description: "Still listening — no replies from leads since last check."
+              }]
+            }),
+            muteHttpExceptions: true
+          });
+          props.setProperty("LAST_REPLY_HEARTBEAT", String(nowMs));
+          Logger.log("Heartbeat sent to replies thread");
+        } catch (e) {
+          Logger.log("Heartbeat error: " + e.message);
+        }
+      }
+    }
   } catch (e) {
     Logger.log("FATAL ERROR in checkAndNotifyReplies: " + e.message);
   }
