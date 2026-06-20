@@ -1862,14 +1862,16 @@ function sendDailySummary() {
       }]
     };
 
+    var webhookUrl = _getDiscordWebhookUrl();
     try {
-      UrlFetchApp.fetch(DISCORD_WEBHOOK_URL, {
+      var options = {
         method: "POST",
         contentType: "application/json",
         payload: JSON.stringify(discordPayload),
         muteHttpExceptions: true
-      });
-      Logger.log("Daily summary sent to Discord for " + dateStr);
+      };
+      var response = UrlFetchApp.fetch(webhookUrl, options);
+      Logger.log("Daily summary sent to Discord for " + dateStr + " (status " + response.getResponseCode() + ")");
     } catch (e) {
       Logger.log("Discord webhook error: " + e.message);
     }
@@ -1878,6 +1880,31 @@ function sendDailySummary() {
   } catch (e) {
     Logger.log("FATAL ERROR in sendDailySummary: " + e.message);
   }
+}
+
+function _getDiscordWebhookUrl() {
+  var props = PropertiesService.getScriptProperties();
+  var threadId = props.getProperty("DISCORD_THREAD_ID");
+  if (threadId) {
+    return DISCORD_WEBHOOK_URL + "?thread_id=" + encodeURIComponent(threadId);
+  }
+  return DISCORD_WEBHOOK_URL;
+}
+
+function setDailyUpdateThreadId(threadId) {
+  if (!threadId || threadId.trim() === "") {
+    Logger.log("Usage: setDailyUpdateThreadId(\"THREAD_ID\")");
+    Logger.log("Tip: enable Developer Mode in Discord, right-click the 'daily-updates' thread, Copy ID");
+    return;
+  }
+  PropertiesService.getScriptProperties().setProperty("DISCORD_THREAD_ID", threadId.trim());
+  Logger.log("DISCORD_THREAD_ID set to: " + threadId.trim());
+  Logger.log("Daily summaries will now be posted to that thread.");
+}
+
+function clearDailyUpdateThreadId() {
+  PropertiesService.getScriptProperties().deleteProperty("DISCORD_THREAD_ID");
+  Logger.log("DISCORD_THREAD_ID cleared — daily summaries will go to the default channel.");
 }
 
 
