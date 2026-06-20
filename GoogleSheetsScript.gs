@@ -1246,6 +1246,18 @@ function sendNextEmail() {
 
         props.setProperty("LAST_SENT_ROW", String(rowNum));
         props.setProperty("FA_TICK_COUNT", String(parseInt(props.getProperty("FA_TICK_COUNT") || "0") + 1));
+
+        try {
+          var sentThreads = GmailApp.search("in:sent to:" + email, 0, 1);
+          if (sentThreads.length > 0) {
+            var sentLabel = GmailApp.getUserLabelByName("FA-Sent");
+            if (!sentLabel) sentLabel = GmailApp.createLabel("FA-Sent");
+            sentThreads[0].addLabel(sentLabel);
+            Logger.log("Labeled FA-Sent: " + email);
+          }
+        } catch (gErr) {
+          Logger.log("Gmail sent label error: " + gErr.message);
+        }
       } else {
         var err = result.error || "";
         var isQuotaError = err.indexOf("quota") >= 0 ||
@@ -1262,6 +1274,17 @@ function sendNextEmail() {
           Logger.log("QUOTA (email sent): " + email + " | " + name + " | row=" + rowNum);
           sentCount++;
           props.setProperty("LAST_SENT_ROW", String(rowNum));
+
+          try {
+            var sentThreads = GmailApp.search("in:sent to:" + email, 0, 1);
+            if (sentThreads.length > 0) {
+              var sentLabel = GmailApp.getUserLabelByName("FA-Sent");
+              if (!sentLabel) sentLabel = GmailApp.createLabel("FA-Sent");
+              sentThreads[0].addLabel(sentLabel);
+            }
+          } catch (gErr) {
+            Logger.log("Gmail sent label error: " + gErr.message);
+          }
         } else {
           var existingNotes = String(_cellSafe(allData[i], cNotes, ""));
           var retryMatch = existingNotes.match(/retry:(\d+)/);
@@ -1570,6 +1593,16 @@ function checkAndNotifyReplies() {
               sheet.getRange(rowNum, cStatus + 1).setValue("replied");
               var replyNote = "[Replied: " + date.toISOString() + "]";
               sheet.getRange(rowNum, cNotes + 1).setValue(replyNote);
+
+              try {
+                msg.markRead();
+                var replyLabel = GmailApp.getUserLabelByName("FA-Replied");
+                if (!replyLabel) replyLabel = GmailApp.createLabel("FA-Replied");
+                msg.getThread().addLabel(replyLabel);
+                Logger.log("Marked read + labeled FA-Replied: " + fromEmail);
+              } catch (gErr) {
+                Logger.log("Gmail label error: " + gErr.message);
+              }
 
               delete sentLeads[fromEmail];
             }
