@@ -40,6 +40,8 @@ const TEST_MODE = false;
 const SECRET_KEY = "fa_open_track_2026_xK9mPqR";
 const CLOUDFLARE_WORKER_URL = "https://emailsendingopenrate.isiraglobal.workers.dev";
 const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1512500880027418634/TUQeQ8KVXfxot0HLm9l4qC-w_3FUWNwo8WLiicj9w0sTudCd8IZNptnTOxewdp8gGQ_v";
+const DISCORD_THREAD_DAILY_UPDATES = "1517977961532493914";
+const DISCORD_THREAD_REPLIES = "1512500398219591690";
 const INGEST_CFG = {
   THIS_SS_ID: "1DL7oreU6PnuCRl1MNYjmqKkU1h2JrWfiv2Zah2wi540",
   APIFY_SHEET_NAME: "Apify",
@@ -361,7 +363,7 @@ function run() {
         ]
       }]
     };
-    var discResp = UrlFetchApp.fetch(DISCORD_WEBHOOK_URL, {
+    var discResp = UrlFetchApp.fetch(DISCORD_WEBHOOK_URL + "?thread_id=" + DISCORD_THREAD_DAILY_UPDATES, {
       method: "POST",
       contentType: "application/json",
       payload: JSON.stringify(testPayload),
@@ -1549,7 +1551,7 @@ function checkAndNotifyReplies() {
               };
 
               try {
-                UrlFetchApp.fetch(DISCORD_WEBHOOK_URL, {
+                UrlFetchApp.fetch(DISCORD_WEBHOOK_URL + "?thread_id=" + DISCORD_THREAD_REPLIES, {
                   method: "POST",
                   contentType: "application/json",
                   payload: JSON.stringify(discordPayload),
@@ -1685,7 +1687,6 @@ function sendDailySummary() {
       }]
     };
 
-    var webhookUrl = _getDiscordWebhookUrl();
     try {
       var options = {
         method: "POST",
@@ -1693,7 +1694,7 @@ function sendDailySummary() {
         payload: JSON.stringify(discordPayload),
         muteHttpExceptions: true
       };
-      var response = UrlFetchApp.fetch(webhookUrl, options);
+      var response = UrlFetchApp.fetch(DISCORD_WEBHOOK_URL + "?thread_id=" + DISCORD_THREAD_DAILY_UPDATES, options);
       Logger.log("Daily summary sent to Discord for " + dateStr + " (status " + response.getResponseCode() + ")");
     } catch (e) {
       Logger.log("Discord webhook error: " + e.message);
@@ -1703,31 +1704,6 @@ function sendDailySummary() {
   } catch (e) {
     Logger.log("FATAL ERROR in sendDailySummary: " + e.message);
   }
-}
-
-function _getDiscordWebhookUrl() {
-  var props = PropertiesService.getScriptProperties();
-  var threadId = props.getProperty("DISCORD_THREAD_ID");
-  if (threadId) {
-    return DISCORD_WEBHOOK_URL + "?thread_id=" + encodeURIComponent(threadId);
-  }
-  return DISCORD_WEBHOOK_URL;
-}
-
-function setDailyUpdateThreadId(threadId) {
-  if (!threadId || threadId.trim() === "") {
-    Logger.log("Usage: setDailyUpdateThreadId(\"THREAD_ID\")");
-    Logger.log("Tip: enable Developer Mode in Discord, right-click the 'daily-updates' thread, Copy ID");
-    return;
-  }
-  PropertiesService.getScriptProperties().setProperty("DISCORD_THREAD_ID", threadId.trim());
-  Logger.log("DISCORD_THREAD_ID set to: " + threadId.trim());
-  Logger.log("Daily summaries will now be posted to that thread.");
-}
-
-function clearDailyUpdateThreadId() {
-  PropertiesService.getScriptProperties().deleteProperty("DISCORD_THREAD_ID");
-  Logger.log("DISCORD_THREAD_ID cleared — daily summaries will go to the default channel.");
 }
 
 
