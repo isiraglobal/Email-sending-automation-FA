@@ -363,7 +363,7 @@ function run() {
         ]
       }]
     };
-    var discResp = UrlFetchApp.fetch(DISCORD_WEBHOOK_URL + "?thread_id=" + DISCORD_THREAD_DAILY_UPDATES, {
+    var discResp = UrlFetchApp.fetch(DISCORD_WEBHOOK_URL + "?thread_id=" + "1512500398219591690", {
       method: "POST",
       contentType: "application/json",
       payload: JSON.stringify(testPayload),
