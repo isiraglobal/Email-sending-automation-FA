@@ -24,7 +24,7 @@
  *   - Fixed _ensureHeader — now validates/corrects mismatched headers
  *   - Fixed syncOpensFromCloudflare — dynamic header + safe column reads
  *   - Fixed checkAndNotifyReplies — dynamic header + safe column reads
- *   - Fixed generateDailyReport — dynamic header + safe column reads
+ *   - Discord daily summary replaces Google Doc report for quick-view
  *   - Fixed sendNextEmail — removed fragile SC.* fallbacks
  *   - Fixed retry notes — reads fresh data instead of stale snapshot
  *
@@ -40,10 +40,6 @@ const TEST_MODE = false;
 const SECRET_KEY = "fa_open_track_2026_xK9mPqR";
 const CLOUDFLARE_WORKER_URL = "https://emailsendingopenrate.isiraglobal.workers.dev";
 const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1512500880027418634/TUQeQ8KVXfxot0HLm9l4qC-w_3FUWNwo8WLiicj9w0sTudCd8IZNptnTOxewdp8gGQ_v";
-const REPORT_FOLDER_ID = "1p9gPG_X45JPeP8w6TNu7XGcCc466nxKd";
-
-let REPORT_DOC_ID = null;
-
 const INGEST_CFG = {
   THIS_SS_ID: "1DL7oreU6PnuCRl1MNYjmqKkU1h2JrWfiv2Zah2wi540",
   APIFY_SHEET_NAME: "Apify",
@@ -379,22 +375,10 @@ function run() {
   }
   Logger.log("");
 
-  Logger.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  Logger.log("TEST 7: Report Folder Access");
-  Logger.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  try {
-    var folder = DriveApp.getFolderById(REPORT_FOLDER_ID);
-    Logger.log("  Folder found: " + folder.getName());
-    Logger.log("  URL: " + folder.getUrl());
-    results.reportFolder = "PASS";
-  } catch (e) {
-    Logger.log("  FAIL: " + e.message);
-    results.reportFolder = "FAIL";
-  }
   Logger.log("");
 
   Logger.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  Logger.log("TEST 8: Send Email Dry Run");
+  Logger.log("TEST 7: Send Email Dry Run");
   Logger.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   if (targetSheet && targetSheet.getLastRow() >= 2) {
     try {
@@ -497,7 +481,7 @@ function run() {
         triggerFuncs[fn] = true;
         Logger.log("  • " + fn + " — " + t.getEventType());
       });
-      var expected = ["sendNextEmail", "syncOpensFromCloudflare", "checkAndNotifyReplies", "generateDailyReport", "sendDailySummary"];
+      var expected = ["sendNextEmail", "syncOpensFromCloudflare", "checkAndNotifyReplies", "sendDailySummary"];
       var missing = expected.filter(function(f) { return !triggerFuncs[f]; });
       if (missing.length > 0) {
         Logger.log("  Missing triggers: " + missing.join(", "));
@@ -634,13 +618,6 @@ function setupTriggers() {
       desc: "Check replies — every 3 hours"
     },
     {
-      func: "generateDailyReport",
-      freq: ScriptApp.WeekDay.MONDAY,
-      hour: 23,
-      minute: 0,
-      desc: "Daily report — 11 PM every day"
-    },
-    {
       func: "sendDailySummary",
       freq: ScriptApp.WeekDay.MONDAY,
       hour: 19,
@@ -676,12 +653,6 @@ function setupTriggers() {
         builder = ScriptApp.newTrigger(cfg.func)
           .timeBased()
           .everyHours(3);
-      } else if (cfg.func === "generateDailyReport") {
-        builder = ScriptApp.newTrigger(cfg.func)
-          .timeBased()
-          .atHour(cfg.hour)
-          .nearMinute(cfg.minute)
-          .everyDays(1);
       } else if (cfg.func === "sendDailySummary") {
         builder = ScriptApp.newTrigger(cfg.func)
           .timeBased()
@@ -1627,154 +1598,6 @@ function checkAndNotifyReplies() {
 // MAIN: DAILY REPORT — FIXED
 // ============================================================================
 
-function generateDailyReport() {
-  try {
-    var ss = _getActiveSS();
-    var sheetName = TEST_MODE ? INGEST_CFG.TEST_SHEET_NAME : INGEST_CFG.OUT_SORTED;
-    var sortedSheet = ss.getSheetByName(sheetName);
-    if (!sortedSheet) {
-      Logger.log("ERROR: '" + sheetName + "' sheet not found");
-      return;
-    }
-
-    var lastRow = sortedSheet.getLastRow();
-    if (lastRow < 2) {
-      Logger.log("No data for report");
-      return;
-    }
-
-    var colMap = _readHeaderColMap(sortedSheet);
-    Logger.log("Column map: " + JSON.stringify(colMap));
-
-    var cStatus = colMap.status;
-    var cSentTS = colMap.sent_timestamp;
-    var cOpenCount = colMap.open_count;
-    var cVariant = colMap.variant;
-
-    if (cStatus === -1) {
-      Logger.log("FATAL: 'status' column not found — cannot generate report");
-      return;
-    }
-
-    var lastCol = sortedSheet.getLastColumn();
-    var readCols = lastCol;
-    var data = sortedSheet.getRange(2, 1, lastRow - 1, readCols).getValues();
-    var today = new Date();
-    var todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), "yyyy-MM-dd");
-
-    var stats = {
-      totalLeads: data.length,
-      sentToday: 0,
-      totalSent: 0,
-      opens: 0,
-      bounces: 0,
-      replies: 0,
-      failed: 0,
-      openRate: 0,
-      responseRate: 0,
-      variants: {}
-    };
-
-    for (var i = 0; i < data.length; i++) {
-      var status = String(_cellSafe(data[i], cStatus, "")).trim().toLowerCase();
-      var sentTime = cSentTS >= 0 ? String(_cellSafe(data[i], cSentTS, "")).trim() : "";
-      var rawOpen = cOpenCount >= 0 ? data[i][cOpenCount] : 0;
-      var openCount = (typeof rawOpen === "number" && !isNaN(rawOpen)) ? rawOpen : 0;
-      var variant = cVariant >= 0 ? String(_cellSafe(data[i], cVariant, "")).trim() : "";
-
-      if (sentTime.indexOf(todayStr) >= 0) stats.sentToday++;
-      if (status === "sent") stats.totalSent++;
-      if (openCount > 0) stats.opens++;
-      if (status === "bounced") stats.bounces++;
-      if (status === "replied") stats.replies++;
-      if (status === "failed") stats.failed++;
-
-      if (variant && status === "sent") {
-        stats.variants[variant] = (stats.variants[variant] || 0) + 1;
-      }
-    }
-
-    stats.openRate = stats.totalSent > 0 ? ((stats.opens / stats.totalSent) * 100).toFixed(2) : "0.00";
-    stats.responseRate = stats.totalSent > 0 ? ((stats.replies / stats.totalSent) * 100).toFixed(2) : "0.00";
-
-    var reportText = "FOREIGN AFFAIRS — DAILY REPORT\n"
-      + "Date: " + todayStr + "\n"
-      + "Generated: " + new Date().toLocaleString() + "\n"
-      + "Mode: " + (TEST_MODE ? "TEST" : "PRODUCTION") + "\n\n"
-      + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-      + "METRICS\n"
-      + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-      + "Total Leads: " + stats.totalLeads + "\n"
-      + "Total Sent: " + stats.totalSent + "\n"
-      + "Sent Today: " + stats.sentToday + "\n"
-      + "Opens: " + stats.opens + "\n"
-      + "Open Rate: " + stats.openRate + "%\n"
-      + "Responses (Replies): " + stats.replies + "\n"
-      + "Response Rate: " + stats.responseRate + "%\n"
-      + "Bounces: " + stats.bounces + "\n"
-      + "Failed: " + stats.failed + "\n\n"
-      + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-      + "VARIANTS\n"
-      + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-
-    var variantKeys = Object.keys(stats.variants);
-    for (var v = 0; v < variantKeys.length; v++) {
-      reportText += variantKeys[v] + ": " + stats.variants[variantKeys[v]] + " sent\n";
-    }
-
-    reportText += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-
-    var reportDoc = null;
-    var props = PropertiesService.getScriptProperties();
-    var savedDocId = REPORT_DOC_ID || props.getProperty("REPORT_DOC_ID");
-
-    if (savedDocId) {
-      try {
-        reportDoc = DocumentApp.openById(savedDocId);
-        REPORT_DOC_ID = savedDocId;
-      } catch (e) {
-        Logger.log("Could not open saved report doc (" + savedDocId + "): " + e.message);
-        reportDoc = null;
-        props.deleteProperty("REPORT_DOC_ID");
-      }
-    }
-
-    if (!reportDoc) {
-      try {
-        reportDoc = DocumentApp.create("Foreign Affairs Daily Reports");
-        var newDocId = reportDoc.getId();
-
-        try {
-          var folder = DriveApp.getFolderById(REPORT_FOLDER_ID);
-          var file = DriveApp.getFileById(newDocId);
-          folder.addFile(file);
-          DriveApp.getRootFolder().removeFile(file);
-        } catch (folderErr) {
-          Logger.log("Warning: Could not move doc to folder: " + folderErr.message);
-          Logger.log("Doc was created in root Drive. URL: " + reportDoc.getUrl());
-        }
-
-        REPORT_DOC_ID = newDocId;
-        props.setProperty("REPORT_DOC_ID", REPORT_DOC_ID);
-        Logger.log("Created new report doc: " + reportDoc.getUrl());
-      } catch (e) {
-        Logger.log("ERROR: Could not create report doc: " + e.message);
-        Logger.log("Report text (not saved):\n" + reportText);
-        return;
-      }
-    }
-
-    try {
-      var body = reportDoc.getBody();
-      body.appendParagraph(reportText);
-      Logger.log("Report appended for " + todayStr + ": " + reportDoc.getUrl());
-    } catch (e) {
-      Logger.log("ERROR appending to report doc: " + e.message);
-    }
-  } catch (e) {
-    Logger.log("FATAL ERROR in generateDailyReport: " + e.message);
-  }
-}
 
 
 // ============================================================================
