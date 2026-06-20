@@ -1663,6 +1663,16 @@ function sendDailySummary() {
       if (status === "failed") failed++;
     }
 
+    var dayOfWeek = nowEst.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      Logger.log("Weekend — skipping daily summary");
+      return;
+    }
+    if (sentToday === 0) {
+      Logger.log("No emails sent today — skipping daily summary");
+      return;
+    }
+
     var openRate = totalSent > 0 ? ((opens / totalSent) * 100).toFixed(1) : "0.0";
     var replyRate = totalSent > 0 ? ((replies / totalSent) * 100).toFixed(1) : "0.0";
 
